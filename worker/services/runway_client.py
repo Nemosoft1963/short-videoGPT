@@ -15,8 +15,8 @@ RUNWAY_MODEL = os.getenv("RUNWAY_MODEL", "gen4_turbo")
 RUNWAY_DURATION = int(os.getenv("RUNWAY_DURATION", "5"))
 RUNWAY_RATIO = os.getenv("RUNWAY_RATIO", "720:1280")  # 縦型9:16
 RUNWAY_IMAGE_RETRIES = int(os.getenv("RUNWAY_IMAGE_RETRIES", "3"))
-POLL_SECONDS = int(os.getenv("COMFY_OUTPUT_POLL_SECONDS", "5"))
-TIMEOUT_SECONDS = int(os.getenv("COMFY_OUTPUT_TIMEOUT_SECONDS", "300"))
+POLL_SECONDS = int(os.getenv("RUNWAY_POLL_SECONDS", "5"))
+TIMEOUT_SECONDS = int(os.getenv("RUNWAY_TIMEOUT_SECONDS", "300"))
 RUNWAY_API_BASE = "https://api.dev.runwayml.com/v1"
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/storage"))

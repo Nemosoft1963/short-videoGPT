@@ -97,5 +97,5 @@ if ($results.Node -and $results.Npm -and $results.Python -and $results.Docker -a
     Write-Host "Core tools are ready." -ForegroundColor Green
 }
 else {
-    Write-Host "Some tools are missing. See docs\install_for_codex.md." -ForegroundColor Yellow
+    Write-Host "Some tools are missing. README.md の必要環境とクイックスタートを確認してください。" -ForegroundColor Yellow
 }

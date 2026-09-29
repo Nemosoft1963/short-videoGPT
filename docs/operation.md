@@ -3,9 +3,11 @@
 ## 通常起動
 
 ```powershell
-copy .env.example .env
-docker compose up --build
+Copy-Item .env.example .env
+docker compose up -d --build
 ```
+
+生成UIは `http://localhost:3000`、APIドキュメントは `http://localhost:18000/docs` です。
 
 ## 停止
 
@@ -19,6 +21,27 @@ docker compose down
 docker compose logs -f worker
 ```
 
+全体の状態と直近ログ:
+
+```powershell
+docker compose ps
+docker compose logs --tail=200
+```
+
+## 再起動と設定反映
+
+単純な再起動:
+
+```powershell
+docker compose restart
+```
+
+`.env` やコードを反映する場合:
+
+```powershell
+docker compose up -d --build --force-recreate
+```
+
 ## 完成動画の場所
 
 ```text
@@ -27,18 +50,28 @@ storage/projects/{project_id}/final/final.mp4
 
 ## 動画生成エンジン
 
-Web UIから Runway、Google Veo、MiniMax Hailuo、MOCを選択します。
+Web UIから Runway、Google Veo、MiniMax Hailuo、Luma、MOCを選択します。
 ComfyUIは2026-09-22にシステムから削除済みです。
 
 ## BGM
 
-BGMを使う場合は以下に置きます。
+BGMはUIから登録するか、以下に置きます。
 
 ```text
 storage/assets/bgm.mp3
+storage/assets/bgm/
 ```
 
 画面で「BGMあり」にすると使用されます。
+
+## 診断
+
+```powershell
+Invoke-RestMethod http://localhost:18000/api/health
+Invoke-RestMethod http://localhost:18000/api/diagnostics
+```
+
+外部APIの設定を変更したときは、`api` と `worker` の両方を再作成してください。
 
 ## v0.2 追加機能
 

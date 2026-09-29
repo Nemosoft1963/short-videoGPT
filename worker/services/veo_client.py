@@ -15,8 +15,8 @@ VEO_MODEL = os.getenv("VEO_MODEL", "veo-3.1-lite-generate-preview")
 VEO_DURATION_SECONDS = os.getenv("VEO_DURATION_SECONDS", "6")
 VEO_RESOLUTION = os.getenv("VEO_RESOLUTION", "720p")
 VEO_PERSON_GENERATION = os.getenv("VEO_PERSON_GENERATION", "").strip()
-POLL_SECONDS = int(os.getenv("VEO_POLL_SECONDS", os.getenv("COMFY_OUTPUT_POLL_SECONDS", "10")))
-TIMEOUT_SECONDS = int(os.getenv("VEO_TIMEOUT_SECONDS", os.getenv("COMFY_OUTPUT_TIMEOUT_SECONDS", "900")))
+POLL_SECONDS = int(os.getenv("VEO_POLL_SECONDS", "10"))
+TIMEOUT_SECONDS = int(os.getenv("VEO_TIMEOUT_SECONDS", "900"))
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/storage"))
 VIDEO_CACHE_DIR = STORAGE_DIR / "assets" / "veo_lite_video_cache"

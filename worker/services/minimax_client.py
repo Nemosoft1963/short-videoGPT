@@ -17,7 +17,7 @@ MINIMAX_RESOLUTION = os.getenv("MINIMAX_RESOLUTION", "768P")
 MINIMAX_PROMPT_OPTIMIZER = os.getenv("MINIMAX_PROMPT_OPTIMIZER", "true").lower() in {"1", "true", "yes", "on"}
 MINIMAX_FAST_PRETREATMENT = os.getenv("MINIMAX_FAST_PRETREATMENT", "true").lower() in {"1", "true", "yes", "on"}
 POLL_SECONDS = int(os.getenv("MINIMAX_POLL_SECONDS", "10"))
-TIMEOUT_SECONDS = int(os.getenv("MINIMAX_TIMEOUT_SECONDS", os.getenv("COMFY_OUTPUT_TIMEOUT_SECONDS", "900")))
+TIMEOUT_SECONDS = int(os.getenv("MINIMAX_TIMEOUT_SECONDS", "900"))
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/storage"))
 VIDEO_CACHE_DIR = STORAGE_DIR / "assets" / "minimax_video_cache"

@@ -13,8 +13,8 @@ LUMA_MODEL = os.getenv("LUMA_MODEL", "ray-flash-2")
 LUMA_DURATION = os.getenv("LUMA_DURATION", "5s")
 LUMA_RESOLUTION = os.getenv("LUMA_RESOLUTION", "720p")
 LUMA_API_BASE = os.getenv("LUMA_API_BASE", "https://api.lumalabs.ai/dream-machine/v1").rstrip("/")
-POLL_SECONDS = int(os.getenv("LUMA_POLL_SECONDS", os.getenv("COMFY_OUTPUT_POLL_SECONDS", "5")))
-TIMEOUT_SECONDS = int(os.getenv("LUMA_TIMEOUT_SECONDS", os.getenv("COMFY_OUTPUT_TIMEOUT_SECONDS", "300")))
+POLL_SECONDS = int(os.getenv("LUMA_POLL_SECONDS", "5"))
+TIMEOUT_SECONDS = int(os.getenv("LUMA_TIMEOUT_SECONDS", "300"))
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/storage"))
 VIDEO_CACHE_DIR = STORAGE_DIR / "assets" / "luma_video_cache"
