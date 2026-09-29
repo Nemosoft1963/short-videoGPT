@@ -45,7 +45,7 @@ http://localhost:5000/models/info
 
 ```powershell
 cd C:\Users\kanto\short-videoGPT
-docker compose up --build
+docker compose up -d --build
 ```
 
 起動後、ブラウザで開きます。
@@ -57,7 +57,7 @@ http://localhost:3000
 API診断:
 
 ```text
-http://localhost:8000/api/diagnostics
+http://localhost:18000/api/diagnostics
 ```
 
 ## 3. 動画生成
@@ -85,7 +85,6 @@ C:\Users\kanto\short-videoGPT\storage\projects\{project_id}\final\final.mp4
 近道君を止める:
 
 ```powershell
-Ctrl + C
 docker compose down
 ```
 
@@ -142,21 +141,6 @@ C:\Users\kanto\.docker\config.json: Access is denied
 `docker compose config` や `docker compose up` が動いていれば、まずは続行できます。
 Docker Hub ログインやpullで失敗する場合は、Docker Desktopを通常ユーザーで起動し直してください。
 
-### VOICEVOXを使いたい
-
-通常起動ではVOICEVOXは起動しません。
-VOICEVOXを使う場合だけ profile を付けます。
-
-```powershell
-docker compose --profile voicevox up --build
-```
-
-`.env` も以下に変更します。
-
-```env
-TTS_ENGINE=voicevox
-```
-
 ## 7. 日次制作の最短手順
 
 毎日の制作では、基本はこの2つだけです。
@@ -180,4 +164,3 @@ docker compose up --build
 ```text
 http://localhost:3000
 ```
-

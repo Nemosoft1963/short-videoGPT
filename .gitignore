@@ -47,6 +47,7 @@ docs/*
 !docs/current_design_spec_qwen3_voice_subtitle.md
 !docs/google_veo_lite_setup.md
 !docs/operation.md
+!docs/production.md
 !docs/phf_extension_spec.md
 !docs/prompts.md
 !docs/quick_test.md

@@ -329,6 +329,7 @@ docker compose exec -T redis redis-cli llen rq:queue:video
 ## 関連資料
 
 - [運用手順](docs/operation.md)
+- [本番環境の運用](docs/production.md)
 - [クイックテスト](docs/quick_test.md)
 - [台本仕様書](docs/script_spec.md)
 - [API資料](docs/api.md)

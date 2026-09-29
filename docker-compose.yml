@@ -1,9 +1,19 @@
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   frontend:
+    <<: *service-defaults
     build: ./frontend
     container_name: short-video-frontend
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       # frontendコンテナ内からAPIへ接続する宛先です。
       # api名でDNS解決できない環境でも、container_name側で解決しやすくします。
@@ -18,16 +28,18 @@ services:
           - short-video-frontend
 
   api:
+    <<: *service-defaults
     build: ./api
     container_name: short-video-api
     ports:
-      - "18000:8000"
+      - "127.0.0.1:18000:8000"
     env_file:
       - .env
     volumes:
       - ./storage:/storage
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 10s
@@ -41,6 +53,7 @@ services:
           - short-video-api
 
   worker:
+    <<: *service-defaults
     build: ./worker
     container_name: short-video-worker
     env_file:
@@ -48,7 +61,8 @@ services:
     volumes:
       - ./storage:/storage
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     command: rq worker video --url redis://redis:6379/0
     networks:
       short-video-net:
@@ -57,10 +71,18 @@ services:
           - short-video-worker
 
   redis:
+    <<: *service-defaults
     image: redis:7-alpine
     container_name: short-video-redis
-    ports:
-      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     networks:
       short-video-net:
         aliases:
@@ -68,12 +90,13 @@ services:
           - short-video-redis
 
   lipsync:
+    <<: *service-defaults
     profiles:
       - lipsync
     build: ./lipsync_service
     container_name: short-video-lipsync
     ports:
-      - "7860:7860"
+      - "127.0.0.1:7860:7860"
     env_file:
       - .env
     volumes:
@@ -98,3 +121,7 @@ networks:
   short-video-net:
     name: short-video-net
     driver: bridge
+
+volumes:
+  redis-data:
+    name: short-video-redis-data
