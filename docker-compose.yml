@@ -1,0 +1,100 @@
+services:
+  frontend:
+    build: ./frontend
+    container_name: short-video-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # frontendコンテナ内からAPIへ接続する宛先です。
+      # api名でDNS解決できない環境でも、container_name側で解決しやすくします。
+      - VITE_PROXY_TARGET=http://short-video-api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      short-video-net:
+        aliases:
+          - frontend
+          - short-video-frontend
+
+  api:
+    build: ./api
+    container_name: short-video-api
+    ports:
+      - "18000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./storage:/storage
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      short-video-net:
+        aliases:
+          - api
+          - short-video-api
+
+  worker:
+    build: ./worker
+    container_name: short-video-worker
+    env_file:
+      - .env
+    volumes:
+      - ./storage:/storage
+    depends_on:
+      - redis
+    command: rq worker video --url redis://redis:6379/0
+    networks:
+      short-video-net:
+        aliases:
+          - worker
+          - short-video-worker
+
+  redis:
+    image: redis:7-alpine
+    container_name: short-video-redis
+    ports:
+      - "6379:6379"
+    networks:
+      short-video-net:
+        aliases:
+          - redis
+          - short-video-redis
+
+  lipsync:
+    profiles:
+      - lipsync
+    build: ./lipsync_service
+    container_name: short-video-lipsync
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    volumes:
+      - ./storage:/storage
+      - ./storage/lipsync_models:/models
+    environment:
+      - LIPSYNC_WORK_DIR=/storage/lipsync_jobs
+    gpus: all
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      short-video-net:
+        aliases:
+          - lipsync
+          - short-video-lipsync
+
+networks:
+  short-video-net:
+    name: short-video-net
+    driver: bridge

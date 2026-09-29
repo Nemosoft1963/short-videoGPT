@@ -1,0 +1,9 @@
+redis==5.2.1
+rq==2.1.0
+pydantic==2.10.4
+requests==2.32.3
+anthropic
+websocket-client
+gTTS
+edge-tts
+yt-dlp

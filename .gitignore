@@ -1,0 +1,63 @@
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Generated media, downloaded models, and runtime data
+storage/
+tools/
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.log
+
+# Frontend build products
+frontend/node_modules/
+frontend/dist/
+node_modules/
+dist/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local agent/session metadata
+.agents/
+.claude/
+.codex/
+
+# Removed legacy assets retained only in the local working copy
+LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json
+musetalk-contact.jpg
+
+# Machine-specific operational history
+docs/current_system_spec_*.md
+docs/resume_memory.md
+docs/shutdown_snapshot*.md
+docs/service_removal_preparation.md
+
+# Publish only current user/developer documentation
+docs/*
+!docs/ai_script_generation_guide_latest.md
+!docs/ai_script_input_guide.md
+!docs/api.md
+!docs/current_design_spec_qwen3_voice_subtitle.md
+!docs/google_veo_lite_setup.md
+!docs/operation.md
+!docs/phf_extension_spec.md
+!docs/prompts.md
+!docs/quick_test.md
+!docs/runbook_analystk_lipsync.md
+!docs/runbook_qwen3_tts.md
+!docs/runbook_stylebertvits2.md
+!docs/script_spec.md
+!docs/subtitle_position_wrap.md
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
