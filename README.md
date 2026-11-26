@@ -112,16 +112,17 @@ Windowsでは次の補助スクリプトも利用できます。
 |---|---|---|---|
 | `mock` | ローカル確認用 | なし | 初回確認向け |
 | `runway` | Runway | `RUNWAY_API_KEY` | 外部API課金に注意 |
-| `veo_lite` | Google Veo | `GEMINI_API_KEY` | API利用資格・課金設定が必要 |
-| `minimax` | MiniMax Hailuo | `MINIMAX_API_KEY` | 外部API課金に注意 |
+| `google_omni` | Google Gemini Omni Flash | `GEMINI_API_KEY` | 登録静止画からの動画生成に使用。API課金が必要 |
+| `minimax` | MiniMax Hailuo（旧プロジェクト互換） | `MINIMAX_API_KEY` | 新規S15生成には使用しない |
 | `luma` | Luma Dream Machine | `LUMAAI_API_KEY` | 外部API課金に注意 |
 
-例：MiniMaxを使う場合
+例：Google Gemini Omni Flashを使う場合
 
 ```env
-VIDEO_ENGINE=minimax
-MINIMAX_API_KEY=ここに自分のキーを設定
-MINIMAX_MODEL=MiniMax-Hailuo-2.3
+VIDEO_ENGINE=google_omni
+START_FRAME_VIDEO_ENGINE=google_omni
+GEMINI_API_KEY=ここに自分のキーを設定
+GOOGLE_OMNI_MODEL=gemini-omni-1.2-flash
 ```
 
 APIキーを設定した後はコンテナを再作成します。
@@ -333,7 +334,7 @@ docker compose exec -T redis redis-cli llen rq:queue:video
 - [クイックテスト](docs/quick_test.md)
 - [台本仕様書](docs/script_spec.md)
 - [API資料](docs/api.md)
-- [Google Veo設定](docs/google_veo_lite_setup.md)
+- [Google Gemini Omni設定](docs/google_omni_setup.md)
 - [字幕位置と折り返し](docs/subtitle_position_wrap.md)
 - [分析官K口パク運用手順](docs/runbook_analystk_lipsync.md)
 

@@ -130,6 +130,7 @@ class StyleBertVITS2Client:
         speed_scale: float | None = None,
         volume_scale: float = 1.0,
         model_id: int | None = None,
+        model_name: str | None = None,
         style: str | None = None,
         style_weight: float | None = None,
         sdp_ratio: float | None = None,
@@ -157,6 +158,8 @@ class StyleBertVITS2Client:
             "length": round(1.0 / speed, 4),
             "language": _normalize_language(language),
         }
+        if model_name:
+            params["model_name"] = model_name
 
         chunks = _split_text(normalized_text, MAX_CHARS_PER_REQUEST)
         if len(chunks) > 1:

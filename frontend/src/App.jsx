@@ -33,7 +33,8 @@ function App() {
     standard_timing_mode: DEFAULT_SCRIPT_PRESET.standard_timing_mode || 'script_unbounded',
     style: 'serious_documentary',
     model: DEFAULT_SCRIPT_PRESET.model || 'mock',
-    tts_engine: 'qwen3tts',
+    start_frame_engine_overrides: DEFAULT_SCRIPT_PRESET.start_frame_engine_overrides || {},
+    tts_engine: DEFAULT_SCRIPT_PRESET.tts_engine || 'qwen3tts',
     voice_speaker_id: 0,
     voice_speed_scale: 1.0,
     tts_model_id: 3,
@@ -54,20 +55,20 @@ function App() {
     subtitle_font_size: 72,
     subtitle_wrap_chars: 14,
     subtitle_max_lines: 3,
-    subtitle_position_from_bottom_pct: 40,
+    subtitle_position_from_bottom_pct: DEFAULT_SCRIPT_PRESET.subtitle_position_from_bottom_pct ?? 40,
     head_title: '',
     thumbnail_time_seconds: 0,
     final_call_text: DEFAULT_SCRIPT_PRESET.format === 'standard_landscape' ? 'チャンネル登録よろしくね' : '',
     final_call_speech: DEFAULT_SCRIPT_PRESET.format === 'standard_landscape' ? 'チャンネル登録よろしくね' : '',
     narration_volume: 1.0,
-    bgm: false,
+    bgm: DEFAULT_SCRIPT_PRESET.bgm ?? false,
     bgm_filename: '',
-    logo_filename: '',
+    logo_filename: DEFAULT_SCRIPT_PRESET.logo_filename || '',
     background_video_filename: '',
     intro_video_filename: '',
     outro_video_filename: '',
     typewriter_subtitle: true,
-    bgm_auto: true,
+    bgm_auto: DEFAULT_SCRIPT_PRESET.bgm_auto ?? true,
   });
   const [voices, setVoices] = useState([]);
   const [voiceSource, setVoiceSource] = useState('');
@@ -75,6 +76,11 @@ function App() {
   const [logos, setLogos] = useState([]);
   const [bgms, setBgms] = useState([]);
   const [bumpers, setBumpers] = useState([]);
+  const [sourceImages, setSourceImages] = useState([]);
+  const [videoClips, setVideoClips] = useState([]);
+  const [selectedSourceImage, setSelectedSourceImage] = useState('');
+  const [clipMessage, setClipMessage] = useState('');
+  const [clipPreviewId, setClipPreviewId] = useState('');
   const [projectId, setProjectId] = useState('');
   const [status, setStatus] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -115,6 +121,12 @@ function App() {
         ? { standard_timing_mode: 'script_unbounded' }
         : (p.standard_timing_mode ? { standard_timing_mode: p.standard_timing_mode } : {})),
       ...(p.model ? { model: p.model } : {}),
+      ...(p.start_frame_engine_overrides ? { start_frame_engine_overrides: p.start_frame_engine_overrides } : {}),
+      ...(p.tts_engine ? { tts_engine: p.tts_engine } : {}),
+      ...('bgm' in p ? { bgm: p.bgm } : {}),
+      ...('bgm_auto' in p ? { bgm_auto: p.bgm_auto } : {}),
+      ...('logo_filename' in p ? { logo_filename: p.logo_filename } : {}),
+      ...('subtitle_position_from_bottom_pct' in p ? { subtitle_position_from_bottom_pct: p.subtitle_position_from_bottom_pct } : {}),
       ...(p.analystk_lipsync_source_mode ? { analystk_lipsync_source_mode: p.analystk_lipsync_source_mode } : {}),
       ...(p.analystk_lipsync_source_set ? { analystk_lipsync_source_set: p.analystk_lipsync_source_set } : {}),
       ...(p.analystk_lipsync_display_mode ? { analystk_lipsync_display_mode: p.analystk_lipsync_display_mode } : {}),
@@ -225,6 +237,67 @@ function App() {
     } catch (_) {}
   }
 
+  async function fetchSourceImages() {
+    try {
+      const res = await apiFetch('/api/assets/source-images');
+      if (res.ok) {
+        const data = await res.json();
+        setSourceImages(data.images || []);
+        setSelectedSourceImage(prev => prev || data.images?.[0]?.id || '');
+      }
+    } catch (_) {}
+  }
+
+  async function fetchVideoClips() {
+    try {
+      const res = await apiFetch('/api/assets/video-clips');
+      if (res.ok) setVideoClips((await res.json()).clips || []);
+    } catch (_) {}
+  }
+
+  async function uploadSourceImage(file) {
+    if (!file) return;
+    setClipMessage('元画像を登録中…');
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const res = await apiFetch('/api/assets/source-images', { method: 'POST', body });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '画像の登録に失敗しました');
+      setSelectedSourceImage(data.id);
+      setClipMessage(`元画像を登録しました: ${data.name}`);
+      fetchSourceImages();
+    } catch (error) { setClipMessage(String(error)); }
+  }
+
+  async function uploadVideoClip(file) {
+    if (!file) return;
+    setClipMessage('既存動画を登録中…');
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const res = await apiFetch('/api/assets/video-clips', { method: 'POST', body });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '動画の登録に失敗しました');
+      setClipMessage(`動画素材を登録しました: ${data.name}`);
+      setClipPreviewId(data.id);
+      fetchVideoClips();
+    } catch (error) { setClipMessage(String(error)); }
+  }
+
+  function insertStartFrameIntoScript(image) {
+    if (!image) return;
+    setScriptPresetId('custom');
+    setForm(prev => ({ ...prev, script: `${prev.script.trim()}\n\n映像：[start_frame:${image.name}] \nナレーション：\n字幕：`.trim() }));
+    setClipMessage(`${image.name} を開始フレームとして台本に追加しました。「映像：」の後に動き・場面を記述してください。`);
+  }
+
+  function insertClipIntoScript(clip) {
+    setScriptPresetId('custom');
+    setForm(prev => ({ ...prev, script: `${prev.script.trim()}\n\n映像：[clip:${clip.filename}]\nナレーション：\n字幕：`.trim() }));
+    setClipMessage(`${clip.filename} を台本の末尾に追加しました。発話と字幕を入力してください。`);
+  }
+
   async function uploadLogo(file) {
     const formData = new FormData();
     formData.append('file', file);
@@ -330,7 +403,7 @@ function App() {
     }
   }
 
-  useEffect(() => { fetchProjects(); fetchVoices(); fetchLogos(); fetchBgms(); fetchBumpers(); }, []);
+  useEffect(() => { fetchProjects(); fetchVoices(); fetchLogos(); fetchBgms(); fetchBumpers(); fetchSourceImages(); fetchVideoClips(); }, []);
 
   useEffect(() => {
     if (!projectId) return;
@@ -339,6 +412,7 @@ function App() {
   }, [projectId]);
 
   const completed = status?.status === 'completed';
+  useEffect(() => { if (completed) fetchVideoClips(); }, [completed]);
   const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
   const isActive = status && !TERMINAL.has(status.status);
   const isStyleBert = voiceSource.startsWith('stylebertvits2');
@@ -487,6 +561,46 @@ function App() {
           </div>
           <p className="hint">細かく指定する場合は「映像：」「ナレーション：」「字幕：」を各シーンに書けます。空欄にすると自動台本になります。</p>
 
+          <div className="assetPanel">
+            <h3>開始フレーム用の静止画</h3>
+            <p className="miniHint">静止画を登録し、台本の映像指示で指定します。動画は「生成開始」時に、台本に沿ってMiniMaxで生成されます（有料）。画像を登録しただけでは生成されません。</p>
+            <label className="small uploadButton">
+              ＋ 元画像を登録
+              <input type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={e => { uploadSourceImage(e.target.files?.[0]); e.target.value = ''; }} />
+            </label>
+            <label>元画像</label>
+            <select value={selectedSourceImage} onChange={e => setSelectedSourceImage(e.target.value)}>
+              <option value="">画像を選択</option>
+              {sourceImages.map(image => <option key={image.id} value={image.id}>{image.name}</option>)}
+            </select>
+            {selectedSourceImage && <img className="assetPreviewImage" src={`${API_BASE}/api/assets/source-images/${selectedSourceImage}`} alt="選択中の元画像" />}
+            <button type="button" className="small" disabled={!selectedSourceImage} onClick={() => insertStartFrameIntoScript(sourceImages.find(image => image.id === selectedSourceImage))}>台本に開始フレーム指定を挿入</button>
+            <p className="miniHint">例：<code>映像：[start_frame:ターニャのリアル静止画.jpg] 講義室で自然に瞬きし、手振りを交えて説明する。カメラは固定。</code> 動き・場面の指示は必須です。1シーンごとに指定できます。</p>
+            <p className="miniHint">DXおじさんの例：<code>映像：[start_frame:DXおじさん3.jpg] 教室の机でタブレットを示して自然にうなずく。カメラは固定。</code> 次の行に <code>DXおじさん：説明の台詞</code> と書くと、本人の音声と口パクを合わせます。</p>
+            {clipMessage && <p className="hint" role="status">{clipMessage}</p>}
+            <details className="assetVideoInsertDetails">
+              <summary>既存動画の登録・挿入（必要な場合のみ開く）</summary>
+              <p className="miniHint">既に完成したMP4を素材として登録できます。</p>
+              <label className="small uploadButton">
+                ＋ 既存のMP4を登録
+                <input type="file" accept="video/mp4" hidden onChange={e => { uploadVideoClip(e.target.files?.[0]); e.target.value = ''; }} />
+              </label>
+              <div className="assetClipList">
+                {videoClips.map(clip => <div className="assetClip" key={clip.id}>
+                  <span>{clip.filename}（{clip.status}）</span>
+                  {clip.status === 'ready'
+                    ? <div className="assetClipActions">
+                        <button type="button" className="small" onClick={() => setClipPreviewId(clip.id)}>再生</button>
+                        <button type="button" className="small" onClick={() => insertClipIntoScript(clip)}>台本に挿入</button>
+                      </div>
+                    : null}
+                </div>)}
+              </div>
+              {clipPreviewId && <video className="assetPreviewVideo" controls src={`${API_BASE}/api/assets/video-clips/${clipPreviewId}/file`} />}
+              <p className="miniHint">台本では <code>映像：[clip:動画ファイル名.mp4]</code> を書くと、その動画をシーン全体に使用します。同じファイル名の重複登録はできません。以前の素材ID指定も利用できます。</p>
+            </details>
+          </div>
+
           <div className="row single">
             <div>
               <label>スタイル</label>
@@ -507,10 +621,9 @@ function App() {
                 <option value="mock">MOC / mock ローカル確認</option>
                 <option value="runway">RUNWAY 本番生成</option>
                 <option value="luma">LUMA / Dream Machine 本番生成</option>
-                <option value="veo_lite">Google Veo 3.1 Lite 本番生成</option>
-                <option value="minimax">MiniMax Hailuo 本番生成</option>
+                <option value="google_omni">Google Gemini Omni Flash 本番生成</option>
               </select>
-              <p className="miniHint">MOCはAPIを使わない確認用です。RUNWAY / LUMA / Veo Lite / MiniMaxはクレジットを消費する本番生成です。</p>
+              <p className="miniHint">MOCはAPIを使わない確認用です。RUNWAY / LUMA / Google Gemini Omniはクレジットを消費する本番生成です。</p>
             </div>
             <div>
               <label>音声</label>
@@ -635,7 +748,7 @@ function App() {
                   <option value="anime">アニメセット</option>
                   <option value="real">リアルセット</option>
                 </select>
-                <p className="miniHint">分析官Kまたは少佐が話すシーンに使う口パク元素材のセットを選びます。</p>
+                <p className="miniHint">分析官Kまたは少佐の口パク素材を選びます。台本内の [motoko:anime] / [motoko:real] より、この画面の選択を優先します。</p>
               </div>
               <div>
                 <label>分析官K／少佐 口パク素材</label>

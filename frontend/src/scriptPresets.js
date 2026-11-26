@@ -1,7 +1,7 @@
-import S13_SCRIPTS from './s13_scripts_v2.md?raw';
+import S15_SCRIPTS from './s15_01_20.md?raw';
 
-const S13_SERIES_ID = 'shohizei_yami_s13_v2';
-const S13_SERIES_LABEL = '消費税の闇 S13';
+const S15_SERIES_ID = 'shohizei_yami_s15';
+const S15_SERIES_LABEL = '消費税の闇 S15';
 
 function extractSceneScript(md) {
   const body = md.split(/\r?\n(?=#\s+投稿運用メモ)/)[0];
@@ -37,11 +37,11 @@ function cleanTitle(rawTitle, number) {
   return (rawTitle || '')
     .replace(/^[\s（(【\["'「]+/, '')
     .replace(/[\s）)】\]"'」]+$/, '')
-    .trim() || `S13-${number}`;
+    .trim() || `S15-${number}`;
 }
 
-function parseS13ShortPresets(md) {
-  const headingPattern = /^##\s+S13-(\d{2})([^\r\n]*)$/gm;
+function parseS15ShortPresets(md) {
+  const headingPattern = /^##\s+S15-(\d{2})([^\r\n]*)$/gm;
   const headings = Array.from(md.matchAll(headingPattern));
   const postMemo = md.search(/^#\s+投稿運用メモ/m);
   const presets = [];
@@ -57,18 +57,27 @@ function parseS13ShortPresets(md) {
     if (!script) return;
 
     presets.push({
-      id: `${S13_SERIES_ID}_short_${number}`,
-      label: `${S13_SERIES_LABEL}・ショート #${number}：${title}`,
-      title: `${S13_SERIES_LABEL}｜#${number}｜${title}`,
-      prompt: `${S13_SERIES_LABEL} #${number}「${title}」。あずかり金という虚構を一次資料と制度構造から検証するショート。台本指定どおりに生成する。`,
+      id: `${S15_SERIES_ID}_short_${number}`,
+      label: `${S15_SERIES_LABEL}・ショート #${number}：${title}`,
+      title: `${S15_SERIES_LABEL}｜#${number}｜${title}`,
+      prompt: `${S15_SERIES_LABEL} #${number}「${title}」。給与明細の税と社会保険料を、台本指定に沿って解説するショート。`,
       format: 'short_vertical',
       duration: 60,
-      // S13 は graphic タグを保持し、図解をローカル生成する。外部動画APIの大量消費を避ける。
-      model: 'mock',
+      // 図解はローカル生成。start_frame 指定シーンだけ外部の画像→動画生成を使う。
+      model: 'google_omni',
+      start_frame_engine_overrides: Object.fromEntries(
+        script.split('\n\n').flatMap((block, index) =>
+          block.includes('[start_frame:') ? [[index + 1, 'google_omni']] : []),
+      ),
+      tts_engine: 'stylebertvits2',
+      bgm: true,
+      bgm_auto: true,
+      logo_filename: '消費税の闇新ヘッダー.jpg',
+      subtitle_position_from_bottom_pct: 24,
       analystk_lipsync_source_mode: 'video',
       analystk_lipsync_source_set: 'real',
       analystk_lipsync_display_mode: 'full',
-      short_timing_mode: 'fixed_57',
+      short_timing_mode: 'script',
       standard_timing_mode: 'script_unbounded',
       final_call_text: '',
       final_call_speech: '',
@@ -79,12 +88,12 @@ function parseS13ShortPresets(md) {
   return presets;
 }
 
-const s13PresetMap = new Map();
-parseS13ShortPresets(S13_SCRIPTS).forEach(preset => {
-  s13PresetMap.set(preset.id, preset);
+const s15PresetMap = new Map();
+parseS15ShortPresets(S15_SCRIPTS).forEach(preset => {
+  s15PresetMap.set(preset.id, preset);
 });
 
-export const SCRIPT_PRESETS = Array.from(s13PresetMap.values())
+export const SCRIPT_PRESETS = Array.from(s15PresetMap.values())
   .sort((left, right) => left.id.localeCompare(right.id));
 
 export const DEFAULT_SCRIPT_PRESET_ID = SCRIPT_PRESETS[0]?.id || 'custom';

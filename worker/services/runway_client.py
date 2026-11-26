@@ -226,6 +226,7 @@ class RunwayClient:
         ratio: Optional[str] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
+        first_frame_image: Optional[Path] = None,
     ) -> Path:
         ratio = ratio or RUNWAY_RATIO
         duration = RUNWAY_DURATION
@@ -237,32 +238,49 @@ class RunwayClient:
         同じプロンプトの画像がキャッシュにあれば画像生成をスキップする。
         """
 
-        # 動画キャッシュチェック（ヒットすれば API 呼び出し不要）
-        if self._load_cached_video(positive_prompt, out_path):
+        first_frame_cache = None
+        if first_frame_image is not None:
+            image_path = Path(first_frame_image)
+            mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(image_path.suffix.lower())
+            if not mime or not image_path.is_file():
+                raise ValueError("first_frame_image must be an existing JPG, PNG, or WEBP file")
+            image_bytes = image_path.read_bytes()
+            image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+            first_frame_cache = VIDEO_CACHE_DIR / f"i2v_{self._prompt_hash({**self._cache_key(positive_prompt, ratio, duration, width, height), 'first_frame_sha256': image_sha256})}.mp4"
+            if first_frame_cache.is_file() and first_frame_cache.stat().st_size > 0:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(first_frame_cache, out_path)
+                if progress_callback:
+                    progress_callback(100, "Runway: 開始画像のキャッシュ動画を使用")
+                return out_path
+            prompt_image = f"data:{mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
             if progress_callback:
-                progress_callback(100, "Runway: キャッシュ動画使用、スキップ")
-            return out_path
-
-        # Step1: 画像生成（またはキャッシュ取得）
-        if RUNWAY_SIMILAR_VIDEO_CACHE_ENABLED and self._load_similar_cached_video(positive_prompt, out_path):
-            if progress_callback:
-                progress_callback(100, "Runway: 近似キャッシュ動画使用、スキップ")
-            return out_path
-
-        cached_b64 = self._load_cached_b64(positive_prompt)
-        if cached_b64:
-            prompt_image = cached_b64
-            if progress_callback:
-                progress_callback(30, "Runway: キャッシュ画像使用、動画生成中...")
+                progress_callback(30, "Runway: 登録開始画像から動画生成中...")
         else:
-            if progress_callback:
-                progress_callback(10, "Runway: 画像生成中...")
-            print(f"[runway] Step1 画像生成: {positive_prompt[:60]}...")
-            image_url = self._generate_image(positive_prompt)
-            self._save_to_cache(positive_prompt, image_url)
-            prompt_image = image_url
-            if progress_callback:
-                progress_callback(30, "Runway: 動画生成中...")
+            # The text-to-image path keeps its existing cache behavior. A
+            # registered first frame must never hit a text-only cache.
+            if self._load_cached_video(positive_prompt, out_path):
+                if progress_callback:
+                    progress_callback(100, "Runway: キャッシュ動画使用、スキップ")
+                return out_path
+            if RUNWAY_SIMILAR_VIDEO_CACHE_ENABLED and self._load_similar_cached_video(positive_prompt, out_path):
+                if progress_callback:
+                    progress_callback(100, "Runway: 近似キャッシュ動画使用、スキップ")
+                return out_path
+            cached_b64 = self._load_cached_b64(positive_prompt)
+            if cached_b64:
+                prompt_image = cached_b64
+                if progress_callback:
+                    progress_callback(30, "Runway: キャッシュ画像使用、動画生成中...")
+            else:
+                if progress_callback:
+                    progress_callback(10, "Runway: 画像生成中...")
+                print(f"[runway] Step1 画像生成: {positive_prompt[:60]}...")
+                image_url = self._generate_image(positive_prompt)
+                self._save_to_cache(positive_prompt, image_url)
+                prompt_image = image_url
+                if progress_callback:
+                    progress_callback(30, "Runway: 動画生成中...")
 
         # Step2: 画像→動画
         print(f"[runway] Step2 動画生成開始")
@@ -324,7 +342,11 @@ class RunwayClient:
                 video_url = output[0]
                 print(f"[runway] ダウンロード: {video_url[:60]}...")
                 self._download(video_url, out_path)
-                self._save_video_cache(positive_prompt, out_path)
+                if first_frame_cache is not None:
+                    first_frame_cache.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(out_path, first_frame_cache)
+                else:
+                    self._save_video_cache(positive_prompt, out_path)
                 return out_path
 
             elif status == "FAILED":

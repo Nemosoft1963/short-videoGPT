@@ -2,9 +2,11 @@ import os
 import json
 import hashlib
 import re
+import unicodedata
 import shutil
 import subprocess
 import traceback
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -39,14 +41,15 @@ from services.ffmpeg_service import (
 )
 from services.ffmpeg_graphic_service import create_graphic_clip, is_graphic_mode
 from services.ffmpeg_insert_service import apply_insert_overlay
-from services.ffmpeg_logo_bgm import overlay_logo, add_bgm_auto, add_scene_bgms
+from services.ffmpeg_logo_bgm import overlay_logo, add_bgm_auto, add_scene_bgms, select_bgm
 from services.ffmpeg_flash_service import create_flash_sound, ensure_flash_visual_clip
-from services.lipsync_client import generate_lipsync_clip, lipsync_enabled
+from services.lipsync_client import configured_lipsync_source, generate_lipsync_clip, lipsync_enabled
 from services.voice_profiles import normalize_speaker
 
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "/storage"))
 VIDEO_ENGINE = os.getenv("VIDEO_ENGINE", "mock").lower()
-REMOTE_VIDEO_MODELS = {"runway", "luma", "veo_lite", "veo-lite", "google_veo_lite", "minimax", "hailuo", "minimax_hailuo"}
+START_FRAME_VIDEO_ENGINE = os.getenv("START_FRAME_VIDEO_ENGINE", "google_omni").lower()
+REMOTE_VIDEO_MODELS = {"runway", "luma", "veo_lite", "veo-lite", "google_veo_lite", "google_omni", "minimax", "hailuo", "minimax_hailuo"}
 TTS_ENGINE = os.getenv("TTS_ENGINE", "stylebertvits2").lower()
 DEFAULT_WIDTH = int(os.getenv("DEFAULT_WIDTH", "1080"))
 DEFAULT_HEIGHT = int(os.getenv("DEFAULT_HEIGHT", "1920"))
@@ -66,6 +69,105 @@ DEFAULT_SUBTITLE_FONT_SIZE = int(os.getenv("SUBTITLE_FONT_SIZE", "72"))
 DIALOGUE_PAUSE_SECONDS = float(os.getenv("DIALOGUE_PAUSE_SECONDS", "0.08"))
 TTS_PARALLEL_WORKERS = int(os.getenv("TTS_PARALLEL_WORKERS", "4"))
 FINAL_CALL_DIR = STORAGE_DIR / "assets" / "final_calls"
+SOURCE_IMAGE_DIR = STORAGE_DIR / "assets" / "source_images"
+VIDEO_CLIP_DIR = STORAGE_DIR / "assets" / "video_clips"
+CLIP_ASSET_ID_RE = re.compile(r"^clip_[0-9a-f]{32}$")
+IMAGE_ASSET_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
+
+
+def _resolve_clip_asset(reference: str) -> Path:
+    reference = unicodedata.normalize("NFC", str(reference).strip())
+    if CLIP_ASSET_ID_RE.fullmatch(reference):
+        clip_id = reference
+    else:
+        if (not reference.lower().endswith(".mp4") or len(reference) > 100
+                or any(char in reference for char in '<>:"/\\|?*[]')
+                or any(ord(char) < 32 for char in reference)):
+            raise ValueError(f"動画素材のファイル名が不正です: {reference}")
+        matches = []
+        for meta_path in VIDEO_CLIP_DIR.glob("clip_*.json"):
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            filename = unicodedata.normalize("NFC", str(meta.get("filename") or meta.get("name") or "").strip())
+            if filename and not filename.lower().endswith(".mp4"):
+                filename += ".mp4"
+            if filename.casefold() == reference.casefold():
+                matches.append(meta["id"])
+        if not matches:
+            raise FileNotFoundError(f"動画素材が見つかりません: {reference}")
+        if len(matches) != 1:
+            raise ValueError(f"同名の動画素材が複数あります: {reference}")
+        clip_id = matches[0]
+        if not CLIP_ASSET_ID_RE.fullmatch(clip_id):
+            raise ValueError("動画素材IDが不正です")
+    path = VIDEO_CLIP_DIR / f"{clip_id}.mp4"
+    if not path.is_file():
+        raise FileNotFoundError(f"動画素材が見つかりません: {reference}")
+    return path
+
+
+def _resolve_start_frame_image(reference: str) -> Path:
+    reference = unicodedata.normalize("NFC", str(reference).strip())
+    if IMAGE_ASSET_ID_RE.fullmatch(reference):
+        meta_paths = [SOURCE_IMAGE_DIR / f"{reference}.json"]
+    else:
+        if (len(reference) > 100 or Path(reference).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}
+                or any(char in reference for char in '<>:"/\\|?*[]')
+                or any(ord(char) < 32 for char in reference)):
+            raise ValueError(f"開始フレームの画像名が不正です: {reference}")
+        meta_paths = SOURCE_IMAGE_DIR.glob("img_*.json")
+    matches = []
+    for meta_path in meta_paths:
+        if not meta_path.is_file():
+            continue
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not IMAGE_ASSET_ID_RE.fullmatch(str(meta.get("id") or "")):
+            continue
+        if IMAGE_ASSET_ID_RE.fullmatch(reference) or unicodedata.normalize("NFC", str(meta.get("name") or "")).casefold() == reference.casefold():
+            matches.append(meta)
+    if not matches:
+        raise FileNotFoundError(f"開始フレーム画像が登録されていません: {reference}")
+    if len(matches) != 1:
+        raise ValueError(f"同名の開始フレーム画像が複数あります: {reference}")
+    filename = matches[0].get("filename") or ""
+    if Path(filename).name != filename or not re.fullmatch(r"img_[0-9a-f]{32}\.(?:jpg|jpeg|png|webp)", filename, re.IGNORECASE):
+        raise ValueError("開始フレーム画像の保存情報が不正です")
+    image_path = SOURCE_IMAGE_DIR / filename
+    if not image_path.is_file():
+        raise FileNotFoundError(f"開始フレーム画像が見つかりません: {reference}")
+    return image_path
+
+
+def _register_scenario_image_clip(project_id: str, project: dict, scene: dict, raw_path: Path) -> None:
+    source_key = json.dumps({
+        "project_id": project_id,
+        "scene_id": scene["scene_id"],
+        "start_frame_sha256": scene["_start_frame_sha256"],
+        "visual_prompt": scene["visual_prompt"],
+    }, ensure_ascii=False, sort_keys=True)
+    clip_id = "clip_" + hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:32]
+    title = re.sub(r'[<>:"/\\|?*\[\]\x00-\x1f]', "_", str(project.get("title") or "動画")).strip(" ._")[:55] or "動画"
+    filename = f"{title}_場面{scene['scene_id']:02d}_{clip_id[5:13]}.mp4"
+    VIDEO_CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    clip_path = VIDEO_CLIP_DIR / f"{clip_id}.mp4"
+    meta_path = VIDEO_CLIP_DIR / f"{clip_id}.json"
+    if clip_path.is_file() and meta_path.is_file():
+        return
+    temp_path = VIDEO_CLIP_DIR / f"{clip_id}.mp4.tmp"
+    shutil.copy2(raw_path, temp_path)
+    temp_path.replace(clip_path)
+    write_json(meta_path, {
+        "id": clip_id,
+        "name": filename,
+        "filename": filename,
+        "source": "scenario_image_to_video",
+        "project_id": project_id,
+        "scene_id": scene["scene_id"],
+        "start_frame_image": scene["start_frame_image"],
+        "status": "ready",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 LONG_FORM_CHAPTER_MIN_DURATION = float(os.getenv("LONG_FORM_CHAPTER_MIN_DURATION", "180"))
 CHAPTER_TARGET_GAP_SECONDS = float(os.getenv("CHAPTER_TARGET_GAP_SECONDS", "60"))
 CHAPTER_MIN_GAP_SECONDS = float(os.getenv("CHAPTER_MIN_GAP_SECONDS", "30"))
@@ -184,7 +286,11 @@ def _apply_analystk_lipsync(
         source_clip = raw_clips[index]
         audio_path = scene_wavs[index]
         scene_source_mode = str(scene.get("lipsync_source_mode") or lipsync_source_mode)
-        scene_source_set = str(scene.get("lipsync_source_set") or lipsync_source_set)
+        selected_source_set = str(project.get("analystk_lipsync_source_set") or "").strip().lower()
+        scene_source_set = (
+            selected_source_set if selected_source_set in {"anime", "real"}
+            else str(scene.get("lipsync_source_set") or lipsync_source_set)
+        )
         scene_display_mode = str(scene.get("lipsync_display_mode") or lipsync_display_mode)
         if character_speaker == "Major":
             scene_source_mode = "video"
@@ -284,6 +390,106 @@ def _apply_analystk_lipsync(
             print(f"[lipsync] scene {scene_no} failed, keeping original clip: {type(exc).__name__}: {exc}")
 
 
+def _apply_start_frame_character_lipsync(
+    *,
+    project_id: str,
+    scenes: list[dict],
+    raw_clips: list[Path],
+    scene_wavs: list[Path],
+    clip_dir: Path,
+    output_width: int,
+    output_height: int,
+    output_fps: int,
+    allowed_speakers: set[str] | None = None,
+) -> None:
+    if not lipsync_enabled():
+        return
+    character_names = {"LieutenantColonel": "中佐", "DXOjisan": "DXおじさん"}
+    allowed_speakers = allowed_speakers or set(character_names)
+    for index, scene in enumerate(scenes):
+        speakers = [normalize_speaker(turn.get("speaker")) for turn in scene.get("dialogue", []) if turn.get("speaker")]
+        if not speakers:
+            speakers = [normalize_speaker(scene.get("speaker"))]
+        character_speaker = normalize_speaker(scene.get("speaker"))
+        # Another speaker's audio must never animate this character's mouth.
+        if (character_speaker not in allowed_speakers
+                or set(speakers) != {character_speaker}
+                or not scene.get("start_frame_image")):
+            continue
+        enabled_env = (
+            "LIPSYNC_LIEUTENANT_COLONEL_ENABLED"
+            if character_speaker == "LieutenantColonel" else "LIPSYNC_DXOJISAN_ENABLED"
+        )
+        if os.getenv(enabled_env, "true").lower() not in {"1", "true", "yes", "on"}:
+            continue
+        if index >= len(raw_clips) or index >= len(scene_wavs):
+            raise RuntimeError(f"{character_names[character_speaker]} scene {index + 1} has no video or audio for lip sync")
+        scene_no = index + 1
+        source_clip = raw_clips[index]
+        lipsync_raw = clip_dir / f"scene_{scene_no:02d}_lipsync_raw.mp4"
+        lipsync_norm = clip_dir / f"scene_{scene_no:02d}_lipsync.mp4"
+        colonel_anime = (
+            character_speaker == "LieutenantColonel"
+            and Path(str(scene["start_frame_image"])).name == "中佐静止画アニメ.jpg"
+            and (output_width, output_height) == (1080, 1920)
+        )
+        face_box = (
+            os.getenv("LIPSYNC_LIEUTENANT_COLONEL_FACE_BOX", "780,1020,610,970") if colonel_anime
+            else os.getenv("LIPSYNC_DXOJISAN_FACE_BOX", "") if character_speaker == "DXOjisan" else ""
+        )
+        mouth_box = (
+            os.getenv("LIPSYNC_LIEUTENANT_COLONEL_MOUTH_BOX", "685,850,885,990") if colonel_anime
+            else os.getenv("LIPSYNC_DXOJISAN_MOUTH_BOX", "") if character_speaker == "DXOjisan" else ""
+        )
+        try:
+            set_status(project_id, "lipsync", 66, f"シーン{scene_no}: {character_names[character_speaker]}リップシンク生成中")
+            lipsync_args = {
+                "audio_path": scene_wavs[index],
+                "out_path": lipsync_raw,
+                "width": output_width,
+                "height": output_height,
+                "fps": output_fps,
+                "duration": float(scene.get("duration") or 0),
+                "speaker": character_speaker,
+                "use_generated_source": True,
+                "face_box": face_box,
+                "mouth_box": mouth_box,
+                "allow_static_fallback": False,
+            }
+            try:
+                created = generate_lipsync_clip(
+                    fallback_source_path=source_clip, source_mode="video", **lipsync_args,
+                )
+            except Exception as video_exc:
+                if character_speaker != "DXOjisan":
+                    raise
+                # A generated I2V clip can briefly turn the face away. Retry
+                # with the registered, stable start frame before giving up.
+                print(f"[lipsync] scene {scene_no} DX video failed; retrying start image: {video_exc}", flush=True)
+                source_image = _resolve_start_frame_image(scene["start_frame_image"])
+                created = generate_lipsync_clip(
+                    fallback_source_path=source_image, source_mode="image", **lipsync_args,
+                )
+            if not created:
+                raise RuntimeError("lip-sync service returned no clip")
+            normalize_clip(
+                lipsync_raw, lipsync_norm, output_width, output_height,
+                output_fps, float(scene.get("duration") or 0),
+            )
+            raw_clips[index] = lipsync_norm
+            print(f"[lipsync] scene {scene_no} replaced with {character_speaker} audio-synced video")
+        except Exception as exc:
+            if character_speaker == "DXOjisan":
+                print(f"[lipsync] scene {scene_no} DX lip sync failed; keeping original video: {type(exc).__name__}: {exc}", flush=True)
+                continue
+            raise RuntimeError(f"{character_names[character_speaker]} lip sync failed in scene {scene_no}: {type(exc).__name__}: {exc}") from exc
+
+
+def _apply_lieutenant_colonel_lipsync(**kwargs) -> None:
+    """Compatibility wrapper for existing callers and tests."""
+    _apply_start_frame_character_lipsync(**kwargs, allowed_speakers={"LieutenantColonel"})
+
+
 def _final_scene_hold_seconds(project: dict) -> float:
     if project.get("format") == "short_vertical" and project.get("short_timing_mode", "fixed_57") in FIXED_SHORT_TARGET_DURATIONS:
         return FIXED_SHORT_FINAL_SCENE_HOLD_SECONDS
@@ -329,7 +535,7 @@ def _scene_clip_cache_payload(
     fps: int,
     background_video_path: Path | None,
 ) -> dict:
-    return {
+    payload = {
         "renderer_version": 5,
         "visual_prompt": (scene.get("visual_prompt") or "").strip(),
         "negative_prompt": (scene.get("negative_prompt") or "").strip(),
@@ -337,6 +543,9 @@ def _scene_clip_cache_payload(
         "subtitle": (scene.get("subtitle") or "").strip(),
         "overlay_text": (scene.get("overlay_text") or "").strip(),
         "insert_video_id": scene.get("insert_video_id") or "",
+        "clip_asset_id": scene.get("clip_asset_id") or "",
+        "start_frame_image": scene.get("start_frame_image") or "",
+        "start_frame_sha256": scene.get("_start_frame_sha256") or "",
         "insert_layer": scene.get("insert_layer") or "",
         "motoko_lipsync": bool(scene.get("motoko_lipsync")),
         "lipsync_display_mode": scene.get("lipsync_display_mode") or "",
@@ -354,6 +563,11 @@ def _scene_clip_cache_payload(
         "fps": fps,
         "background_video": str(background_video_path) if background_video_path else "",
     }
+    if scene.get("start_frame_image"):
+        engine = (project.get("start_frame_engine_overrides") or {}).get(str(scene["scene_id"]), START_FRAME_VIDEO_ENGINE)
+        if engine != "minimax":
+            payload["start_frame_engine"] = engine
+    return payload
 
 
 def _scene_clip_cache_path(payload: dict) -> Path:
@@ -665,6 +879,7 @@ def _scene_voice_kwargs(project: dict, scene: dict, turn: dict | None = None) ->
         "tts_engine": profile.get("tts_engine", scene.get("tts_engine", project.get("tts_engine", TTS_ENGINE))),
         "speaker_id": profile.get("speaker_id", project_speaker if project_speaker is not None else DEFAULT_TTS_SPEAKER_ID),
         "model_id": profile.get("model_id", scene.get("tts_model_id", project.get("tts_model_id"))),
+        "model_name": profile.get("model_name"),
         "style": profile.get("style", scene.get("tts_style", project.get("tts_style"))),
         "style_weight": profile.get("style_weight", scene.get("tts_style_weight", project.get("tts_style_weight"))),
         "sdp_ratio": profile.get("sdp_ratio", scene.get("tts_sdp_ratio", project.get("tts_sdp_ratio"))),
@@ -676,6 +891,9 @@ def _scene_voice_kwargs(project: dict, scene: dict, turn: dict | None = None) ->
         "qwen3_tts_speaker": profile.get("qwen3_tts_speaker", scene.get("qwen3_tts_speaker", project.get("qwen3_tts_speaker"))),
         "qwen3_tts_instruct": qwen3_tts_instruct,
         "speed_scale": speed_scale,
+        "pitch_scale": profile.get("pitch_scale", 1.0),
+        "presence_boost": profile.get("presence_boost", False),
+        "tail_rise": profile.get("tail_rise", False),
     }
 
 
@@ -694,10 +912,11 @@ def _tts_for_voice(default_tts, voice: dict):
 def _synthesize_with_voice(default_tts, voice: dict, text: str, out_path: Path, speed: float, volume: float):
     tts = _tts_for_voice(default_tts, voice)
     effective_speed = float(speed) * float(voice.get("speed_scale") or 1.0)
-    return tts.synthesize(
+    audio_path, timings = tts.synthesize(
         text, out_path,
         speaker_id=voice["speaker_id"], speed_scale=effective_speed, volume_scale=volume,
         model_id=voice["model_id"],
+        model_name=voice.get("model_name"),
         style=voice["style"],
         style_weight=voice["style_weight"],
         sdp_ratio=voice["sdp_ratio"],
@@ -709,6 +928,51 @@ def _synthesize_with_voice(default_tts, voice: dict, text: str, out_path: Path, 
         qwen3_tts_speaker=voice.get("qwen3_tts_speaker"),
         qwen3_tts_instruct=voice.get("qwen3_tts_instruct"),
     )
+    pitch_scale = float(voice.get("pitch_scale") or 1.0)
+    if not 0.75 <= pitch_scale <= 1.25:
+        raise ValueError("Voice pitch_scale must be between 0.75 and 1.25")
+    if abs(pitch_scale - 1.0) > 0.005:
+        pitched_path = out_path.with_name(f"{out_path.stem}_pitched{out_path.suffix}")
+        subprocess.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(audio_path),
+            "-af", f"rubberband=pitch={pitch_scale:.3f}:formant=preserved",
+            str(pitched_path),
+        ], check=True)
+        pitched_path.replace(out_path)
+        audio_path = out_path
+    if voice.get("presence_boost"):
+        boosted_path = out_path.with_name(f"{out_path.stem}_boosted{out_path.suffix}")
+        subprocess.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(audio_path),
+            "-af", "acompressor=threshold=0.15:ratio=2.2:attack=5:release=100:makeup=1.25,volume=1.7,alimiter=limit=0.94",
+            str(boosted_path),
+        ], check=True)
+        boosted_path.replace(out_path)
+        audio_path = out_path
+    if voice.get("tail_rise"):
+        duration = probe_duration(audio_path)
+        if duration >= 1.2:
+            overlap = 0.08
+            mid_start = duration - 0.95
+            tail_start = duration - 0.57
+            graph = (
+                "[0:a]asplit=3[pre_src][mid_src][tail_src];"
+                f"[pre_src]atrim=end={mid_start + overlap:.3f},asetpts=PTS-STARTPTS[pre];"
+                f"[mid_src]atrim=start={mid_start:.3f}:end={tail_start + overlap:.3f},"
+                "asetpts=PTS-STARTPTS,rubberband=pitch=1.05:formant=preserved,volume=1.05[mid];"
+                f"[tail_src]atrim=start={tail_start:.3f},asetpts=PTS-STARTPTS,"
+                "rubberband=pitch=1.12:formant=preserved,volume=1.15[tail];"
+                "[pre][mid]acrossfade=d=0.08[pm];"
+                "[pm][tail]acrossfade=d=0.08,alimiter=limit=0.94:level=false[out]"
+            )
+            risen_path = out_path.with_name(f"{out_path.stem}_tail_rise{out_path.suffix}")
+            subprocess.run([
+                "ffmpeg", "-y", "-loglevel", "error", "-i", str(audio_path),
+                "-filter_complex", graph, "-map", "[out]", str(risen_path),
+            ], check=True)
+            risen_path.replace(out_path)
+            audio_path = out_path
+    return audio_path, timings
 
 
 def _make_silence(path: Path, duration: float):
@@ -853,6 +1117,9 @@ def _get_video_client(model: str = None):
     elif engine in {"veo_lite", "veo-lite", "google_veo_lite"}:
         from services.veo_client import VeoLiteClient
         return VeoLiteClient()
+    elif engine == "google_omni":
+        from services.google_omni_client import GoogleOmniClient
+        return GoogleOmniClient()
     elif engine in {"minimax", "hailuo", "minimax_hailuo"}:
         from services.minimax_client import MiniMaxClient
         return MiniMaxClient()
@@ -913,6 +1180,20 @@ def _ensure_final_call_clip(
     return clip
 
 
+def _full_frame_major_source(project: dict, scene: dict) -> Path | None:
+    """A full-frame Major lip-sync replaces its entire generated background clip."""
+    if not lipsync_enabled() or scene.get("speaker") != "Major" or not scene.get("motoko_lipsync"):
+        return None
+    if scene.get("start_frame_image") or scene.get("clip_asset_id") or scene.get("is_flash"):
+        return None
+    display_mode = str(scene.get("lipsync_display_mode") or project.get("analystk_lipsync_display_mode") or "bottom")
+    if display_mode != "full":
+        return None
+    selected_set = str(project.get("analystk_lipsync_source_set") or scene.get("lipsync_source_set") or "anime")
+    source = configured_lipsync_source("video", selected_set)
+    return source if source and source.suffix.lower() in {".mp4", ".mov", ".mkv"} else None
+
+
 def generate_video(project_id: str):
     pdir = project_dir(project_id)
     try:
@@ -922,6 +1203,17 @@ def generate_video(project_id: str):
         set_status(project_id, "planning", 5, "シーン構成を作成中")
 
         scenes = build_scenes(project)
+        start_frame_paths = {}
+        for scene in scenes:
+            if scene.get("start_frame_image"):
+                image_path = _resolve_start_frame_image(scene["start_frame_image"])
+                scene["_start_frame_sha256"] = hashlib.sha256(image_path.read_bytes()).hexdigest()
+                start_frame_paths[scene["scene_id"]] = image_path
+        full_frame_major_sources = {
+            scene["scene_id"]: source
+            for scene in scenes
+            if (source := _full_frame_major_source(project, scene)) is not None
+        }
         write_json(pdir / "scenes.json", {"scenes": scenes})
 
         clip_dir = pdir / "clips"
@@ -940,14 +1232,22 @@ def generate_video(project_id: str):
         if background_video_path and not background_video_path.exists():
             print(f"[tasks] background video not found: {background_video_path}")
             background_video_path = None
+        needs_selected_client = any(
+            scene["scene_id"] not in full_frame_major_sources
+            and not scene.get("start_frame_image") and not scene.get("clip_asset_id")
+            and (scene.get("is_flash") or not is_graphic_mode(scene.get("visual_prompt", "")))
+            for scene in scenes
+        )
         try:
-            video_client = _get_video_client(selected_model)
+            video_client = _get_video_client(selected_model) if needs_selected_client else None
         except Exception as e:
             if selected_model in REMOTE_VIDEO_MODELS:
                 set_status(project_id, "failed", 5, f"{selected_model.upper()}初期化失敗: {e}")
                 raise
             video_client = None
             print(f"[tasks] 映像クライアント初期化失敗: {e}")
+        image_video_clients = {}
+        start_frame_engines = project.get("start_frame_engine_overrides") or {}
 
         for i, scene in enumerate(scenes, start=1):
             check_cancel(project_id)
@@ -971,6 +1271,35 @@ def generate_video(project_id: str):
 
             if restored_from_cache:
                 set_status(project_id, "generating_video", base_progress, f"シーン{i}: 既存素材をコピーして使用")
+
+            elif scene.get("clip_asset_id"):
+                asset_path = _resolve_clip_asset(scene["clip_asset_id"])
+                set_status(project_id, "generating_video", base_progress, f"シーン{i}: 登録済み動画素材を使用")
+                shutil.copy2(asset_path, raw)
+
+            elif scene["scene_id"] in full_frame_major_sources:
+                set_status(project_id, "generating_video", base_progress, f"シーン{i}: 少佐の全画面口パク素材を使用")
+                normalize_clip(full_frame_major_sources[scene["scene_id"]], raw, output_width, output_height, output_fps, scene["duration"])
+
+            elif scene.get("start_frame_image"):
+                image_engine = start_frame_engines.get(str(scene["scene_id"]), START_FRAME_VIDEO_ENGINE)
+                if image_engine not in image_video_clients:
+                    image_video_clients[image_engine] = _get_video_client(image_engine)
+                image_video_client = image_video_clients[image_engine]
+                set_status(project_id, "generating_video", base_progress, f"シーン{i}: 登録静止画から{image_engine}で動画生成中")
+                def progress_callback(pct, message, _base=base_progress, _range=scene_range, _i=i, _total=len(scenes)):
+                    mapped = _base + int(_range * pct / 100)
+                    set_status(project_id, "generating_video", mapped, f"シーン{_i}/{_total}: {message}")
+                image_video_client.generate_clip(
+                    scene["visual_prompt"],
+                    scene.get("negative_prompt", ""),
+                    raw,
+                    progress_callback=progress_callback,
+                    ratio=runway_ratio,
+                    width=output_width,
+                    height=output_height,
+                    first_frame_image=start_frame_paths[scene["scene_id"]],
+                )
 
             elif scene.get("is_flash"):
                 def progress_callback(pct, message, _base=base_progress, _range=scene_range, _i=i, _total=len(scenes)):
@@ -1036,6 +1365,8 @@ def generate_video(project_id: str):
 
             if not restored_from_cache:
                 _save_scene_clip_cache(scene_cache_payload, raw)
+            if scene.get("start_frame_image"):
+                _register_scenario_image_clip(project_id, project, scene, raw)
 
             normalized = clip_dir / f"scene_{i:02d}.mp4"
             normalize_clip(raw, normalized, output_width, output_height, output_fps, scene["duration"])
@@ -1238,6 +1569,16 @@ def generate_video(project_id: str):
             output_height=output_height,
             output_fps=output_fps,
         )
+        _apply_start_frame_character_lipsync(
+            project_id=project_id,
+            scenes=scenes,
+            raw_clips=raw_clips,
+            scene_wavs=scene_wavs,
+            clip_dir=clip_dir,
+            output_width=output_width,
+            output_height=output_height,
+            output_fps=output_fps,
+        )
 
         write_json(pdir / "scenes.json", {"scenes": scenes, "audio_debug": audio_debug})
 
@@ -1291,7 +1632,16 @@ def generate_video(project_id: str):
         if scene_bgm_enabled:
             set_status(project_id, "bgm", 83, "台本指定BGMをシーンごとに合成中")
             with_bgm = final_dir / "video_with_scene_bgm.mp4"
-            result = add_scene_bgms(with_audio, scenes, with_bgm, rendered_duration)
+            default_bgm = None
+            if bgm_enabled:
+                bgm_filename = Path(project.get("bgm_filename") or "").name
+                bgm_path_selected = (STORAGE_DIR / "assets" / "bgm" / bgm_filename) if bgm_filename else None
+                bgm_path_manual = bgm_path_selected if bgm_path_selected and bgm_path_selected.exists() else STORAGE_DIR / "assets" / "bgm.mp3"
+                if bgm_path_manual.exists() and (bgm_filename or not bgm_auto):
+                    default_bgm = bgm_path_manual
+                else:
+                    default_bgm = select_bgm(scenes)
+            result = add_scene_bgms(with_audio, scenes, with_bgm, rendered_duration, default_bgm=default_bgm)
             if result != with_audio:
                 audio_source = with_bgm
         elif bgm_enabled:

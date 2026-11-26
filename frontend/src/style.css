@@ -72,6 +72,15 @@ button, .download {
   line-height: 1.7;
   font-size: 15px;
 }
+.assetPanel { margin: 20px 0; padding: 18px; border: 1px solid rgba(244,239,230,.18); border-radius: 14px; background: rgba(0,0,0,.16); }
+.assetPanel button { margin-top: 10px; }
+.assetVideoInsertDetails { margin-top: 18px; padding-top: 12px; border-top: 1px solid rgba(244,239,230,.18); }
+.assetVideoInsertDetails summary { cursor: pointer; color: rgba(244,239,230,.82); }
+.assetPreviewImage { display: block; width: min(100%, 320px); max-height: 220px; object-fit: contain; margin: 12px 0; border-radius: 10px; }
+.assetPreviewVideo { width: min(100%, 420px); max-height: 300px; margin-top: 12px; border-radius: 10px; }
+.assetClipList { margin-top: 16px; display: grid; gap: 8px; }
+.assetClip { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid rgba(244,239,230,.14); border-radius: 10px; }
+.assetClipActions { display: flex; gap: 6px; flex-wrap: wrap; }
 .miniHint {
   margin: 6px 0 0;
   color: rgba(244,239,230,.55);

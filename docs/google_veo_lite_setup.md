@@ -1,5 +1,7 @@
 # Google Veo 3.1 Lite 導入メモ
 
+このGemini APIモデルは2026年10月22日に提供終了しました。新規生成は [Google Gemini Omni設定](google_omni_setup.md) を参照してください。
+
 最終更新: 2026-07-23
 
 ## 事前準備

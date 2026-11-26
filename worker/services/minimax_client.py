@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -47,7 +48,7 @@ class MiniMaxClient:
             prompt = f"{prompt}\nAvoid: {negative_prompt.strip()}"
         return prompt[:2000]
 
-    def _cache_key(self, prompt: str, model: str, duration: int, resolution: str) -> dict:
+    def _cache_key(self, prompt: str, model: str, duration: int, resolution: str, image_sha256: str = "") -> dict:
         return {
             "prompt": prompt.strip(),
             "model": model,
@@ -55,10 +56,11 @@ class MiniMaxClient:
             "resolution": resolution,
             "prompt_optimizer": MINIMAX_PROMPT_OPTIMIZER,
             "fast_pretreatment": MINIMAX_FAST_PRETREATMENT,
+            "first_frame_sha256": image_sha256,
         }
 
-    def _video_cache_path(self, prompt: str, model: str, duration: int, resolution: str) -> Path:
-        return VIDEO_CACHE_DIR / f"{self._prompt_hash(self._cache_key(prompt, model, duration, resolution))}.mp4"
+    def _video_cache_path(self, prompt: str, model: str, duration: int, resolution: str, image_sha256: str = "") -> Path:
+        return VIDEO_CACHE_DIR / f"{self._prompt_hash(self._cache_key(prompt, model, duration, resolution, image_sha256))}.mp4"
 
     def _load_cached_video(self, cache_path: Path, out_path: Path) -> bool:
         if not cache_path.exists():
@@ -86,12 +88,25 @@ class MiniMaxClient:
         ratio: Optional[str] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
+        first_frame_image: Optional[Path] = None,
     ) -> Path:
         model = MINIMAX_MODEL
         duration = MINIMAX_DURATION
         resolution = MINIMAX_RESOLUTION
         prompt = self._compose_prompt(positive_prompt, negative_prompt, ratio, width, height)
-        cache_path = self._video_cache_path(prompt, model, duration, resolution)
+        image_data = None
+        image_sha256 = ""
+        image_mime = ""
+        if first_frame_image is not None:
+            image_path = Path(first_frame_image)
+            image_mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(image_path.suffix.lower(), "")
+            if not image_mime or not image_path.is_file():
+                raise ValueError("first_frame_image must be an existing JPG, PNG, or WEBP file")
+            if image_path.stat().st_size > 20 * 1024 * 1024:
+                raise ValueError("first_frame_image exceeds MiniMax's 20 MB limit")
+            image_data = image_path.read_bytes()
+            image_sha256 = hashlib.sha256(image_data).hexdigest()
+        cache_path = self._video_cache_path(prompt, model, duration, resolution, image_sha256)
 
         if self._load_cached_video(cache_path, out_path):
             if progress_callback:
@@ -106,6 +121,11 @@ class MiniMaxClient:
             "prompt_optimizer": MINIMAX_PROMPT_OPTIMIZER,
             "fast_pretreatment": MINIMAX_FAST_PRETREATMENT,
         }
+        if image_data is not None:
+            # The official I2V request documents first_frame_image without
+            # fast_pretreatment; keep the legacy option only for text-to-video.
+            payload.pop("fast_pretreatment", None)
+            payload["first_frame_image"] = f"data:{image_mime};base64,{base64.b64encode(image_data).decode('ascii')}"
 
         if progress_callback:
             progress_callback(10, "MiniMax: generation request")
@@ -136,7 +156,7 @@ class MiniMaxClient:
         video_url = self._retrieve_download_url(file_id)
         self._download(video_url, out_path)
         self._save_video_cache(cache_path, out_path, {
-            **self._cache_key(prompt, model, duration, resolution),
+            **self._cache_key(prompt, model, duration, resolution, image_sha256),
             "task_id": task_id,
             "file_id": file_id,
         })

@@ -41,6 +41,8 @@ docs/service_removal_preparation.md
 
 # Publish only current user/developer documentation
 docs/*
+!docs/ai_script_manual.md
+!docs/google_omni_setup.md
 !docs/ai_script_generation_guide_latest.md
 !docs/ai_script_input_guide.md
 !docs/api.md

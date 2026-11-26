@@ -42,7 +42,10 @@ def _file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def _cache_key(source: Path, audio: Path, width: int, height: int, fps: int, duration: float) -> str:
+def _cache_key(
+    source: Path, audio: Path, width: int, height: int, fps: int, duration: float,
+    face_box: str = "", mouth_box: str = "", allow_static_fallback: bool = True,
+) -> str:
     payload = {
         "source": str(source),
         "source_sha": _file_digest(source),
@@ -53,7 +56,10 @@ def _cache_key(source: Path, audio: Path, width: int, height: int, fps: int, dur
         "duration": round(float(duration), 3),
         "url": LIPSYNC_URL,
         "endpoint": LIPSYNC_ENDPOINT,
-        "version": 4,
+        "face_box": face_box,
+        "mouth_box": mouth_box,
+        "allow_static_fallback": allow_static_fallback,
+        "version": 6,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -121,6 +127,13 @@ def _resolve_lipsync_source_for_mode(
     return fallback_source_path
 
 
+def configured_lipsync_source(source_mode: str, source_set: str) -> Path | None:
+    """Return a configured source, excluding the caller's generated-clip fallback."""
+    missing = STORAGE_DIR / "__unconfigured_lipsync_source__"
+    selected = _resolve_lipsync_source_for_mode(missing, source_mode, source_set)
+    return selected if selected != missing else None
+
+
 def _resolve_response_file(response: requests.Response, out_path: Path) -> bool:
     content_type = (response.headers.get("content-type") or "").lower()
     if "application/json" not in content_type:
@@ -159,17 +172,25 @@ def generate_lipsync_clip(
     speaker: str = "AnalystK",
     source_mode: str | None = None,
     source_set: str | None = None,
+    use_generated_source: bool = False,
+    face_box: str = "",
+    mouth_box: str = "",
+    allow_static_fallback: bool = True,
 ) -> bool:
     if not lipsync_enabled():
         return False
     if not audio_path.exists() or not fallback_source_path.exists():
         return False
 
-    source_path = _resolve_lipsync_source_for_mode(fallback_source_path, source_mode, source_set)
+    source_path = (
+        fallback_source_path
+        if use_generated_source
+        else _resolve_lipsync_source_for_mode(fallback_source_path, source_mode, source_set)
+    )
     print(f"[lipsync] source selected: speaker={speaker} mode={source_mode or LIPSYNC_SOURCE_MODE} set={source_set or LIPSYNC_SOURCE_SET} path={source_path}")
 
     LIPSYNC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cached = LIPSYNC_CACHE_DIR / f"{_cache_key(source_path, audio_path, width, height, fps, duration)}.mp4"
+    cached = LIPSYNC_CACHE_DIR / f"{_cache_key(source_path, audio_path, width, height, fps, duration, face_box, mouth_box, allow_static_fallback)}.mp4"
     if cached.exists() and cached.stat().st_size > 0:
         shutil.copy2(cached, out_path)
         print(f"[lipsync] cache hit: {cached.name}")
@@ -184,6 +205,9 @@ def generate_lipsync_clip(
         "fps": fps,
         "duration": duration,
         "mode": "high_precision",
+        "face_box": face_box,
+        "mouth_box": mouth_box,
+        "allow_static_fallback": str(allow_static_fallback).lower(),
     }
     with source_path.open("rb") as source_file, audio_path.open("rb") as audio_file:
         response = requests.post(

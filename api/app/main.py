@@ -3,6 +3,8 @@ import json
 import uuid
 import shutil
 import subprocess
+import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Literal
@@ -62,7 +64,8 @@ class ProjectCreate(BaseModel):
         "recruiting",
         "product_intro",
     ] = "serious_documentary"
-    model: Literal["runway", "luma", "veo_lite", "minimax", "mock"] = "mock"
+    model: Literal["runway", "luma", "veo_lite", "google_omni", "minimax", "mock"] = "mock"
+    start_frame_engine_overrides: dict[int, Literal["minimax", "runway", "google_omni"]] = Field(default_factory=dict)
     tts_engine: str = Field(default=os.getenv("TTS_ENGINE", "stylebertvits2"), max_length=40)
     voice_speaker_id: Optional[int] = STYLEBERT_DEFAULT_SPEAKER_ID
     voice_speed_scale: float = Field(default=1.0, ge=0.75, le=1.40)
@@ -188,6 +191,163 @@ LOGO_DIR = STORAGE_DIR / "assets" / "logos"
 BGM_DIR = STORAGE_DIR / "assets" / "bgm"
 BUMPER_DIR = STORAGE_DIR / "assets" / "bumpers"
 FINAL_CALL_DIR = STORAGE_DIR / "assets" / "final_calls"
+SOURCE_IMAGE_DIR = STORAGE_DIR / "assets" / "source_images"
+VIDEO_CLIP_DIR = STORAGE_DIR / "assets" / "video_clips"
+ASSET_ID_RE = re.compile(r"^(?:img|clip)_[0-9a-f]{32}$")
+
+
+def _validated_asset_id(asset_id: str, prefix: str) -> str:
+    if not ASSET_ID_RE.fullmatch(asset_id) or not asset_id.startswith(f"{prefix}_"):
+        raise HTTPException(status_code=422, detail="素材IDが不正です")
+    return asset_id
+
+
+def _clip_filename(name: str) -> str:
+    filename = unicodedata.normalize("NFC", (name or "").strip())
+    if not filename or any(char in filename for char in '<>:"/\\|?*[]') or any(ord(char) < 32 for char in filename):
+        raise HTTPException(status_code=422, detail="動画のファイル名が不正です")
+    if not filename.lower().endswith(".mp4"):
+        filename += ".mp4"
+    if len(filename) > 100:
+        raise HTTPException(status_code=422, detail="動画のファイル名は100文字以下にしてください")
+    return filename
+
+
+def _clip_metadata() -> list[dict]:
+    VIDEO_CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    clips = []
+    for meta in VIDEO_CLIP_DIR.glob("clip_*.json"):
+        data = read_json(meta, {})
+        if data:
+            data["filename"] = _clip_filename(data.get("filename") or data.get("name") or data["id"])
+            clips.append(data)
+    return clips
+
+
+def _ensure_new_clip_filename(filename: str) -> None:
+    if any(clip["filename"].casefold() == filename.casefold() for clip in _clip_metadata()):
+        raise HTTPException(status_code=409, detail=f"同じファイル名の動画が登録済みです: {filename}")
+
+
+def _source_image_name(name: str) -> str:
+    filename = unicodedata.normalize("NFC", (name or "").strip())
+    if (not filename or len(filename) > 100 or Path(filename).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}
+            or any(char in filename for char in '<>:"/\\|?*[]') or any(ord(char) < 32 for char in filename)):
+        raise HTTPException(status_code=422, detail="画像のファイル名が不正です")
+    return filename
+
+
+def _probe_media(path: Path, kind: str) -> None:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        stream = (json.loads(result.stdout).get("streams") or [None])[0]
+        if not stream or not stream.get("width") or not stream.get("height"):
+            raise ValueError("映像を読み取れません")
+        if kind == "image":
+            width, height = int(stream["width"]), int(stream["height"])
+            if min(width, height) <= 300 or max(width, height) / min(width, height) > 2.5:
+                raise ValueError("画像は短辺300px超、縦横比2:5～5:2にしてください")
+        if kind == "video" and stream.get("codec_name") not in {"h264", "hevc", "vp9", "av1"}:
+            raise ValueError("対応していない動画形式です")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError) as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"素材を読み取れません: {exc}") from exc
+
+
+@app.post("/api/assets/source-images")
+async def upload_source_image(file: UploadFile = File(...)):
+    image_name = _source_image_name(file.filename or "")
+    suffix = Path(image_name).suffix.lower()
+    if any(
+        unicodedata.normalize("NFC", str(data.get("name") or "")).casefold() == image_name.casefold()
+        for meta in SOURCE_IMAGE_DIR.glob("img_*.json")
+        if (data := read_json(meta, {}))
+    ):
+        raise HTTPException(status_code=409, detail=f"同じファイル名の画像が登録済みです: {image_name}")
+    content = await file.read(20 * 1024 * 1024 + 1)
+    if not content or len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=422, detail="画像は20MB以下にしてください")
+    image_id = f"img_{uuid.uuid4().hex}"
+    SOURCE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    path = SOURCE_IMAGE_DIR / f"{image_id}{suffix}"
+    path.write_bytes(content)
+    _probe_media(path, "image")
+    item = {"id": image_id, "name": image_name, "filename": path.name, "created_at": now_iso()}
+    write_json(SOURCE_IMAGE_DIR / f"{image_id}.json", item)
+    return item
+
+
+@app.get("/api/assets/source-images")
+def list_source_images():
+    SOURCE_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return {"images": [data for meta in sorted(SOURCE_IMAGE_DIR.glob("img_*.json"), reverse=True) if (data := read_json(meta, {})) and (SOURCE_IMAGE_DIR / data.get("filename", "")).is_file()]}
+
+
+@app.get("/api/assets/source-images/{image_id}")
+def source_image_file(image_id: str):
+    _validated_asset_id(image_id, "img")
+    data = read_json(SOURCE_IMAGE_DIR / f"{image_id}.json", {})
+    path = SOURCE_IMAGE_DIR / data.get("filename", "")
+    if not data or not path.is_file() or path.parent != SOURCE_IMAGE_DIR:
+        raise HTTPException(status_code=404, detail="画像が見つかりません")
+    return FileResponse(path)
+
+
+@app.post("/api/assets/video-clips")
+async def upload_video_clip(file: UploadFile = File(...)):
+    if Path(file.filename or "").suffix.lower() != ".mp4":
+        raise HTTPException(status_code=422, detail="MP4動画を指定してください")
+    filename = _clip_filename(file.filename or "")
+    _ensure_new_clip_filename(filename)
+    clip_id = f"clip_{uuid.uuid4().hex}"
+    VIDEO_CLIP_DIR.mkdir(parents=True, exist_ok=True)
+    path = VIDEO_CLIP_DIR / f"{clip_id}.mp4"
+    size = 0
+    too_large = False
+    with path.open("wb") as output:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > 200 * 1024 * 1024:
+                too_large = True
+                break
+            output.write(chunk)
+    if too_large:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="動画は200MB以下にしてください")
+    if not size:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="空の動画は登録できません")
+    _probe_media(path, "video")
+    item = {"id": clip_id, "name": filename, "filename": filename, "source": "upload", "status": "ready", "created_at": now_iso()}
+    write_json(VIDEO_CLIP_DIR / f"{clip_id}.json", item)
+    return item
+
+
+@app.get("/api/assets/video-clips")
+def list_video_clips():
+    return {"clips": sorted(_clip_metadata(), key=lambda clip: clip["filename"].casefold())}
+
+
+@app.get("/api/assets/video-clips/{clip_id}")
+def video_clip_status(clip_id: str):
+    _validated_asset_id(clip_id, "clip")
+    data = read_json(VIDEO_CLIP_DIR / f"{clip_id}.json", None)
+    if not data:
+        raise HTTPException(status_code=404, detail="動画素材が見つかりません")
+    data["filename"] = _clip_filename(data.get("filename") or data.get("name") or clip_id)
+    return data
+
+
+@app.get("/api/assets/video-clips/{clip_id}/file")
+def video_clip_file(clip_id: str):
+    _validated_asset_id(clip_id, "clip")
+    path = VIDEO_CLIP_DIR / f"{clip_id}.mp4"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="動画ファイルが見つかりません")
+    return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
 @app.get("/api/health")
@@ -493,26 +653,26 @@ def diagnostics():
         except Exception as e:
             result["minimax"] = f"ng: {e}"
     gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
-    result["veo_lite"] = "unknown"
+    result["google_omni"] = "unknown"
     if not gemini_key:
-        result["veo_lite"] = "ng: GEMINI_API_KEY or GOOGLE_API_KEY is not set"
+        result["google_omni"] = "ng: GEMINI_API_KEY or GOOGLE_API_KEY is not set"
     else:
         try:
-            veo_base = os.getenv("VEO_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-            veo_model = os.getenv("VEO_MODEL", "veo-3.1-lite-generate-preview")
+            veo_base = os.getenv("GOOGLE_OMNI_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+            veo_model = os.getenv("GOOGLE_OMNI_MODEL", "gemini-omni-1.2-flash")
             r = requests.get(
                 f"{veo_base}/models/{veo_model}",
                 headers={"x-goog-api-key": gemini_key},
                 timeout=8,
             )
             if r.ok:
-                result["veo_lite"] = f"ok: HTTP {r.status_code}"
+                result["google_omni"] = f"ok: HTTP {r.status_code}"
             elif r.status_code in (401, 403):
-                result["veo_lite"] = "ng: auth failed or model unavailable"
+                result["google_omni"] = "ng: auth failed or model unavailable"
             else:
-                result["veo_lite"] = f"ng: HTTP {r.status_code} {r.text[:120]}"
+                result["google_omni"] = f"ng: HTTP {r.status_code} {r.text[:120]}"
         except Exception as e:
-            result["veo_lite"] = f"ng: {e}"
+            result["google_omni"] = f"ng: {e}"
     return result
 
 

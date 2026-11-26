@@ -71,10 +71,17 @@ def is_graphic_mode(visual_prompt: str) -> bool:
 
 
 def parse_graphic_tag(visual_prompt: str) -> tuple:
-    match = re.search(r'\[graphic(?::([^\]]+))?\]\s*(.*)', visual_prompt, re.DOTALL)
+    match = re.search(r'\[graphic(_anim)?(?::([^\]]+))?\]\s*(.*)', visual_prompt, re.IGNORECASE | re.DOTALL)
     if match:
-        graphic_type = match.group(1) or "dark_text"
-        content = match.group(2).strip()
+        graphic_type = match.group(2) or "dark_text"
+        content = match.group(3).strip()
+        if match.group(1):
+            graphic_type = {
+                "text_reveal": "dark_text",
+                "flow_sequence": "flow",
+                "bar_grow": "bar_chart",
+                "number_count": "title",
+            }.get(graphic_type, graphic_type)
         return graphic_type, content
     return "dark_text", visual_prompt
 

@@ -54,7 +54,7 @@ SPEAKER_LINE_RE = re.compile(r"^(?:ナレーション|Narration)\s*[（(]\s*([^�
 CHARACTER_LINE_RE = re.compile(r"^([A-Za-z0-9_ぁ-んァ-ヶ一-龠々ー]+)\s*[:：]\s*(.+)$")
 KNOWN_SPEAKERS = {
     "GMN", "YT", "META", "GPT", "GROCK", "Grock", "CLAUDE", "クロード", "クロード君",
-    "分析官K", "分析官Ｋ", "調査員S", "調査員Ｓ", "少佐", "Major", "MAJOR",
+    "分析官K", "分析官Ｋ", "調査員S", "調査員Ｓ", "少佐", "Major", "MAJOR", "中佐", "CHUUSA", "LieutenantColonel", "LIEUTENANT_COLONEL", "DXおじさん", "DXオジサン", "DXOjisan", "DX_OJISAN", "若年将校", "YoungOfficer", "YOUNG_OFFICER",
     "Narrator", "Narration", "NARRATION", "ナレーション", "ナレーター",
     "ドライバー", "社長", "銀行担当者", "父親", "子ども",
     "Driver", "President", "Banker", "Father", "ChildBoy",
@@ -62,6 +62,8 @@ KNOWN_SPEAKERS = {
     "ＧＭＮ", "ＹＴ", "ＭＥＴＡ", "ＧＰＴ",
 }
 INSERT_TAG_RE = re.compile(r"\[insert\s*:\s*([^\]\s]+)(?:\s+([^\]]+))?\]", re.IGNORECASE)
+CLIP_ASSET_TAG_RE = re.compile(r"\[clip\s*:\s*([^\]\r\n]+?)\s*\]", re.IGNORECASE)
+START_FRAME_TAG_RE = re.compile(r"\[(?:start_frame|image)\s*:\s*([^\]\r\n]+?)\s*\]", re.IGNORECASE)
 BGM_TAG_RE = re.compile(r"\[bgm\s*:\s*([^\]]+)\]", re.IGNORECASE)
 FLASH_TAG_RE = re.compile(r"\[flash\s*:\s*([^:\]]+)(?:\s*:\s*([^\]]+))?\]", re.IGNORECASE)
 MOTOKO_TAG_RE = re.compile(r"\[motoko\s*:\s*([^\]]+)\]", re.IGNORECASE)
@@ -138,7 +140,9 @@ def _strip_insert_tag(line: str, current_insert_id: str | None, current_insert_o
 def _parse_bgm_value(raw: str) -> str:
     value = (raw or "").strip().strip('"').strip("'")
     value = value.replace("\\", "/").split("/")[-1]
-    if value.lower() in {"", "none", "off", "なし", "無し"}:
+    if value.lower() in {"off", "none", "なし", "無し"}:
+        return "off"
+    if not value:
         return ""
     return value
 
@@ -224,7 +228,7 @@ def _clean_spoken_text(text: str) -> str:
 
 def _has_script_content(block: str) -> bool:
     lowered = (block or "").lower()
-    if "[graphic" in lowered or "[insert" in lowered or "[flash" in lowered or "[bgm" in lowered:
+    if "[graphic" in lowered or "[insert" in lowered or "[clip" in lowered or "[start_frame" in lowered or "[image" in lowered or "[flash" in lowered or "[bgm" in lowered:
         return True
     markers = ("映像", "ナレーション", "字幕", "BGM:", "BGM：", "visual:", "narration:", "subtitle:", "bgm:", "Visual:", "Narration:", "Subtitle:")
     if any(marker in block for marker in markers):
@@ -507,6 +511,8 @@ def _parse_script_block(block: str, fallback_visual: str) -> Dict:
 
     visual = ""
     insert_video_id = None
+    clip_asset_id = None
+    start_frame_image = None
     insert_options = {}
     scene_options = {}
     bgm_filename = None
@@ -525,6 +531,14 @@ def _parse_script_block(block: str, fallback_visual: str) -> Dict:
             if "[graphic" not in line.lower() and "[insert" not in line.lower() and "[bgm" not in line.lower() and not _has_script_content(line):
                 continue
             line = re.sub(r"^#+\s*", "", line).strip()
+        clip_match = CLIP_ASSET_TAG_RE.search(line)
+        if clip_match:
+            clip_asset_id = clip_match.group(1).strip()
+            line = CLIP_ASSET_TAG_RE.sub("", line).strip()
+        image_match = START_FRAME_TAG_RE.search(line)
+        if image_match:
+            start_frame_image = image_match.group(1).strip()
+            line = START_FRAME_TAG_RE.sub("", line).strip()
         line, insert_video_id, insert_options = _strip_insert_tag(line, insert_video_id, insert_options)
         line, bgm_filename = _strip_bgm_tag(line, bgm_filename)
         line, scene_options = _strip_motoko_overlay_tags(line, scene_options)
@@ -607,11 +621,21 @@ def _parse_script_block(block: str, fallback_visual: str) -> Dict:
     subtitle = "\n".join([x.strip() for x in subtitle_lines if x.strip()]).strip()
     overlay_text = "\n".join([x.strip() for x in overlay_lines if x.strip()]).strip()
 
+    if start_frame_image and clip_asset_id:
+        raise ValueError("同じシーンに開始フレームと登録済み動画の両方は指定できません")
+    if start_frame_image and not visual.strip():
+        raise ValueError("開始フレームを指定したシーンには、映像の動き・内容も記述してください")
+    if start_frame_image in {"DXおじさん.jpg", "DXおじさん2.jpg", "DXおじさん3.jpg"}:
+        # Existing AnalystK scripts keep their voice and visuals unless they explicitly
+        # select DXおじさん's registered start frame for this scene.
+        for turn in dialogue:
+            if turn.get("speaker") == "AnalystK":
+                turn["speaker"] = "DXOjisan"
     used_fallback_visual = not bool(visual.strip())
     visual_text = visual.strip() or fallback_visual
     if "[graphic" in visual_text.lower():
         pass
-    elif _is_english_prompt(visual_text):
+    elif start_frame_image or _is_english_prompt(visual_text):
         pass  # ユーザーが書いた英語プロンプトはそのまま使用
     else:
         matched = _match_visual_prompt(visual_text)
@@ -631,6 +655,10 @@ def _parse_script_block(block: str, fallback_visual: str) -> Dict:
         parsed["insert_position"] = "bottom_right"
         if insert_options.get("insert_layer"):
             parsed["insert_layer"] = insert_options["insert_layer"]
+    if clip_asset_id:
+        parsed["clip_asset_id"] = clip_asset_id
+    if start_frame_image:
+        parsed["start_frame_image"] = start_frame_image
     if bgm_filename:
         parsed["bgm_filename"] = bgm_filename
     if scene_options.get("motoko_lipsync"):
@@ -663,11 +691,18 @@ def _build_custom_script_scenes(project: Dict, prefix: str):
     prompt = project.get("prompt", "")
     parsed_items = []
     last_visual = ""
-    active_lipsync_source_set = str(project.get("analystk_lipsync_source_set") or "anime")
+    selected_lipsync_source_set = str(project.get("analystk_lipsync_source_set") or "").strip().lower()
+    if selected_lipsync_source_set not in {"anime", "real"}:
+        selected_lipsync_source_set = ""
+    active_lipsync_source_set = selected_lipsync_source_set or "anime"
     for idx, block in enumerate(blocks):
         fallback_visual = DEFAULT_VISUALS[round(idx * (len(DEFAULT_VISUALS) - 1) / max(1, count - 1))]
         parsed = _parse_script_block(block, fallback_visual)
-        if parsed.get("lipsync_source_set"):
+        if selected_lipsync_source_set and parsed.get("motoko_lipsync"):
+            # The source-set selector in the UI is authoritative. Legacy script tags
+            # remain useful when a project has no explicit source-set selection.
+            parsed["lipsync_source_set"] = selected_lipsync_source_set
+        elif parsed.get("lipsync_source_set"):
             active_lipsync_source_set = parsed["lipsync_source_set"]
         elif parsed.get("motoko_lipsync"):
             parsed["lipsync_source_set"] = active_lipsync_source_set
@@ -692,8 +727,8 @@ def _build_custom_script_scenes(project: Dict, prefix: str):
     for idx, parsed in enumerate(parsed_items):
         visual = parsed["visual"]
         d = durations[idx]
-        # graphicタグがある場合はprefixを付けない
-        if "[graphic" in visual.lower():
+        # 開始フレーム付きシーンは台本の映像指示をそのまま使う。
+        if parsed.get("start_frame_image") or "[graphic" in visual.lower():
             visual_prompt = visual
         else:
             visual_prompt = f"{prefix} {visual}, no readable text."
@@ -703,7 +738,7 @@ def _build_custom_script_scenes(project: Dict, prefix: str):
             "end": t + d,
             "duration": d,
             "visual_prompt": visual_prompt,
-            "negative_prompt": NEGATIVE,
+            "negative_prompt": "No subtitles, no watermark, preserve subject identity." if parsed.get("start_frame_image") else NEGATIVE,
             "narration": parsed["narration"],
             "subtitle": parsed["subtitle"],
             "overlay_text": parsed.get("overlay_text", ""),
@@ -711,6 +746,8 @@ def _build_custom_script_scenes(project: Dict, prefix: str):
             "dialogue": parsed.get("dialogue", []),
             "simultaneous_dialogue": parsed.get("simultaneous_dialogue", False),
             "insert_video_id": parsed.get("insert_video_id"),
+            "clip_asset_id": parsed.get("clip_asset_id"),
+            "start_frame_image": parsed.get("start_frame_image"),
             "insert_position": parsed.get("insert_position"),
             "insert_layer": parsed.get("insert_layer"),
             "bgm_filename": parsed.get("bgm_filename"),

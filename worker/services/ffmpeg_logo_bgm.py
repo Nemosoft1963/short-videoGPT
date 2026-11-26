@@ -40,6 +40,16 @@ def resolve_bgm(name: str | None) -> Path | None:
     for bgm in list_bgm_files():
         if bgm.name.lower() == requested_lower or bgm.stem.lower() == requested_stem:
             return bgm
+    fallback_names = {
+        "low_pulse": "tension_pulse",
+        "tense_strings": "tactics",
+        "deep_drone": "serious_doc",
+    }
+    fallback_stem = fallback_names.get(requested_stem)
+    if fallback_stem:
+        for bgm in list_bgm_files():
+            if bgm.stem.lower() == fallback_stem:
+                return bgm
     return None
 
 
@@ -186,16 +196,18 @@ def add_scene_bgms(
     out_path: Path,
     duration: int,
     volume: float = BGM_VOLUME,
+    default_bgm: Path | None = None,
 ) -> Path:
-    """台本で指定されたBGMをシーン区間ごとに切り替えて合成する。"""
+    """シーン指定を優先し、未指定区間は全編BGMで埋める。off は無音。"""
     segments = []
     for scene in scenes:
         bgm_name = scene.get("bgm_filename") or scene.get("bgm")
-        if not bgm_name:
+        if str(bgm_name or "").lower() in {"off", "none", "なし", "無し"}:
             continue
-        bgm_path = resolve_bgm(str(bgm_name))
+        bgm_path = resolve_bgm(str(bgm_name)) if bgm_name else default_bgm
         if not bgm_path:
-            print(f"[bgm] scene {scene.get('scene_id')} BGM not found: {bgm_name}")
+            if bgm_name:
+                print(f"[bgm] scene {scene.get('scene_id')} BGM not found: {bgm_name}")
             continue
         start = float(scene.get("actual_start", scene.get("start", 0)) or 0)
         end = float(scene.get("actual_end", start + float(scene.get("duration", 0) or 0)) or 0)
